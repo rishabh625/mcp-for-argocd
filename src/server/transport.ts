@@ -213,13 +213,14 @@ export const connectSSETransport = (port: number) => {
   });
 
   logger.info(`Connecting to SSE transport on port: ${port}`);
-  app.listen(port);
+  app.listen(port, '0.0.0.0');
 };
 
 export const connectHttpTransport = (port: number, options?: {
   serverUrl?: string;
   insecure?: boolean;
   callbackPort?: number;
+  callbackUrl?: string;
 }) => {
   const app = express();
   app.use(express.json());
@@ -229,14 +230,17 @@ export const connectHttpTransport = (port: number, options?: {
   if (options?.serverUrl) {
     // OAuth 2.1 mode: MCP clients authenticate via OAuth flow proxied to ArgoCD OIDC
     const callbackPort = options.callbackPort ?? 8085;
-    const mcpBaseUrl = `http://localhost:${port}`;
-    const provider = new ArgocdOAuthProvider(options.serverUrl, callbackPort, options.insecure);
+    const callbackUrlOrPort = options.callbackUrl || callbackPort;
+    const mcpBaseUrl = options.callbackUrl ? new URL(options.callbackUrl).origin : `http://localhost:${port}`;
+    const provider = new ArgocdOAuthProvider(options.serverUrl, callbackUrlOrPort, options.insecure);
 
     // Install OAuth routes (/.well-known/oauth-authorization-server, /authorize, /token, /register)
+    // If callbackUrl is provided, use its origin as the issuer, else use port
+    const issuerBase = options.callbackUrl ? new URL(options.callbackUrl).origin : `http://localhost:${port}`;
     app.use(mcpAuthRouter({
       provider,
-      issuerUrl: new URL(mcpBaseUrl),
-      baseUrl: new URL(mcpBaseUrl),
+      issuerUrl: new URL(issuerBase),
+      baseUrl: new URL(issuerBase),
     }));
 
     // Start standalone callback server on the Dex-registered port
@@ -380,5 +384,5 @@ export const connectHttpTransport = (port: number, options?: {
   app.delete('/mcp', handleSessionRequest);
 
   logger.info(`Connecting to Http Stream transport on port: ${port}`);
-  app.listen(port);
+  app.listen(port, '0.0.0.0');
 };

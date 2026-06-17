@@ -27,7 +27,7 @@ interface PendingAuth {
 }
 
 interface CompletedAuth {
-  /** ArgoCD tokens from the upstream exchange */
+  /** Argo CD tokens from the upstream exchange */
   argocdToken: TokenInfo;
   /** OIDC config used (for refresh) */
   oidcConfig: OIDCConfig;
@@ -60,15 +60,15 @@ function generateOpaqueToken(): string {
 }
 
 /**
- * Custom OAuthServerProvider that proxies MCP OAuth 2.1 to ArgoCD's OIDC/Dex.
+ * Custom OAuthServerProvider that proxies MCP OAuth 2.1 to Argo CD's OIDC/Dex.
  *
  * Flow:
  * 1. MCP client registers dynamically (or uses existing registration)
- * 2. MCP client starts OAuth flow → we redirect to ArgoCD's OIDC provider
- * 3. User authenticates with ArgoCD OIDC → callback comes to us
- * 4. We exchange upstream code for ArgoCD tokens, generate our own auth code
+ * 2. MCP client starts OAuth flow → we redirect to Argo CD's OIDC provider
+ * 3. User authenticates with Argo CD OIDC → callback comes to us
+ * 4. We exchange upstream code for Argo CD tokens, generate our own auth code
  * 5. MCP client exchanges our auth code for our opaque access token
- * 6. On each MCP request, we verify the opaque token and use the stored ArgoCD token
+ * 6. On each MCP request, we verify the opaque token and use the stored Argo CD token
  */
 export class ArgocdOAuthProvider implements OAuthServerProvider {
   private clients = new Map<string, OAuthClientInformationFull>();
@@ -87,10 +87,15 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
 
   constructor(
     private argocdServerUrl: string,
-    callbackPort: number = 8085,
+    callbackPortOrUrl: number | string = 8085,
     private insecure: boolean = false
   ) {
-    this.callbackUrl = `http://localhost:${callbackPort}/auth/callback`;
+    if (typeof callbackPortOrUrl === 'string' && (callbackPortOrUrl.startsWith('http://') || callbackPortOrUrl.startsWith('https://'))) {
+      this.callbackUrl = callbackPortOrUrl;
+    } else {
+      const port = typeof callbackPortOrUrl === 'number' ? callbackPortOrUrl : 8085;
+      this.callbackUrl = `http://localhost:${port}/auth/callback`;
+    }
     // Periodic cleanup of stale state (every 5 minutes)
     this.cleanupInterval = setInterval(() => this.cleanup(), 5 * 60 * 1000);
     // Don't keep process alive just for cleanup
@@ -117,14 +122,14 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
   }
 
   /**
-   * Lazily fetch and cache the ArgoCD OIDC configuration
+   * Lazily fetch and cache the Argo CD OIDC configuration
    */
   private async getOidcConfig(): Promise<{ oidcConfig: OIDCConfig; providerMetadata: OIDCProviderMetadata }> {
     if (this.cachedOidcConfig && this.cachedProviderMetadata) {
       return { oidcConfig: this.cachedOidcConfig, providerMetadata: this.cachedProviderMetadata };
     }
 
-    logger.info({ serverUrl: this.argocdServerUrl }, 'Fetching ArgoCD OIDC configuration');
+    logger.info({ serverUrl: this.argocdServerUrl }, 'Fetching Argo CD OIDC configuration');
     const oidcConfig = await fetchOIDCSettings(this.argocdServerUrl);
     const providerMetadata = await fetchOIDCProviderMetadata(oidcConfig);
 
@@ -135,7 +140,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
   }
 
   /**
-   * Start authorization: redirect to ArgoCD's OIDC provider
+   * Start authorization: redirect to Argo CD's OIDC provider
    */
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
     const { oidcConfig, providerMetadata } = await this.getOidcConfig();
@@ -143,8 +148,6 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
     // Generate our own PKCE for the upstream OIDC flow
     const upstreamPkce = oidcConfig.enablePKCEAuthentication ? generatePKCEChallenge() : undefined;
     const upstreamState = generateState();
-
-    const callbackUrl = this.callbackUrl;
 
     // Store pending auth keyed by upstream state
     this.pendingAuths.set(upstreamState, {
@@ -161,7 +164,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
     const authUrl = buildAuthorizationUrl(
       providerMetadata,
       oidcConfig,
-      callbackUrl,
+      this.callbackUrl,
       upstreamState,
       upstreamPkce
     );
@@ -171,7 +174,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
   }
 
   /**
-   * Handle the callback from ArgoCD's OIDC provider.
+   * Handle the callback from Argo CD's OIDC provider.
    * Called from the /callback route.
    *
    * Returns the MCP client's redirect URI with our auth code appended.
@@ -184,14 +187,13 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
     this.pendingAuths.delete(state);
 
     const { oidcConfig, providerMetadata } = await this.getOidcConfig();
-    const callbackUrl = this.callbackUrl;
 
-    // Exchange the upstream code for ArgoCD tokens
+    // Exchange the upstream code for Argo CD tokens
     const argocdToken = await exchangeCodeForToken(
       providerMetadata,
       oidcConfig,
       code,
-      callbackUrl,
+      this.callbackUrl,
       pending.upstreamPkce.codeVerifier ? pending.upstreamPkce : undefined
     );
 
@@ -241,7 +243,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
     }
     this.completedAuths.delete(authorizationCode);
 
-    // Generate opaque tokens that map to the real ArgoCD tokens
+    // Generate opaque tokens that map to the real Argo CD tokens
     const opaqueAccessToken = generateOpaqueToken();
     const opaqueRefreshToken = completed.argocdToken.refreshToken ? generateOpaqueToken() : undefined;
 
@@ -332,7 +334,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
   }
 
   /**
-   * Verify an opaque access token and return AuthInfo with the real ArgoCD credentials
+   * Verify an opaque access token and return AuthInfo with the real Argo CD credentials
    */
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const stored = this.accessTokens.get(token);

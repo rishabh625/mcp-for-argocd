@@ -22,7 +22,7 @@ export function startCallbackServer(
           return;
         }
 
-        const url = new URL(req.url, `http://localhost:${port}`);
+        const url = new URL(req.url, `http://0.0.0.0:${port}`);
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
         const error = url.searchParams.get('error');
@@ -68,7 +68,7 @@ export function startCallbackServer(
       reject(new Error(`Failed to start callback server on port ${port}: ${err.message}`));
     });
 
-    server.listen(port, '127.0.0.1', () => {
+    server.listen(port, '0.0.0.0', () => {
       logger.info({ port }, 'OAuth callback server listening');
       resolve(shutdown);
     });

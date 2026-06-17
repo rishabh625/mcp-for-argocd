@@ -53,10 +53,14 @@ export const cmd = () => {
           type: 'number',
           default: 8085,
           describe: 'Port for the OAuth callback server (must match Dex redirect_uri registration)'
+        })
+        .option('callback-url', {
+          type: 'string',
+          describe: 'Full URL for OAuth callback (e.g., https://argocd-mcp.example.com/auth/callback) - overrides callback-port'
         });
     },
-    ({ port, serverUrl, insecure, callbackPort }) =>
-      connectHttpTransport(port, { serverUrl, insecure, callbackPort })
+    ({ port, serverUrl, insecure, callbackPort, callbackUrl }) =>
+      connectHttpTransport(port, { serverUrl, insecure, callbackPort, callbackUrl })
   );
 
   exe.command(
