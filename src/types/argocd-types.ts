@@ -13,3 +13,9 @@ export type V1alpha1ResourceResult = ArgoCD.V1alpha1ResourceResult;
 export type V1alpha1ApplicationResourceResult = ArgoCD.ApplicationApplicationResourceResponse;
 export type V1alpha1Cluster = ArgoCD.V1alpha1Cluster;
 export type V1alpha1ClusterList = ArgoCD.V1alpha1ClusterList;
+// ApplicationSet types
+export type V1alpha1ApplicationSet = ArgoCD.V1alpha1ApplicationSet;
+export type V1alpha1ApplicationSetList = ArgoCD.V1alpha1ApplicationSetList;
+export type V1alpha1ApplicationSetTree = ArgoCD.V1alpha1ApplicationSetTree;
+export type ApplicationsetApplicationSetGenerateRequest = ArgoCD.ApplicationsetApplicationSetGenerateRequest;
+export type ApplicationsetApplicationSetGenerateResponse = ArgoCD.ApplicationsetApplicationSetGenerateResponse;

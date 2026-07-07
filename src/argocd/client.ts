@@ -8,7 +8,12 @@ import {
   V1alpha1ResourceDiff,
   V1alpha1ResourceResult,
   V1alpha1ApplicationResourceResult,
-  V1alpha1ClusterList
+  V1alpha1ClusterList,
+  V1alpha1ApplicationSet,
+  V1alpha1ApplicationSetList,
+  V1alpha1ApplicationSetTree,
+  ApplicationsetApplicationSetGenerateRequest,
+  ApplicationsetApplicationSetGenerateResponse
 } from '../types/argocd-types.js';
 import { HttpClient } from './http.js';
 
@@ -331,6 +336,108 @@ export class ArgoCDClient {
         version: resourceRef.version
       },
       action
+    );
+    return body;
+  }
+
+  // ApplicationSet methods
+  public async listApplicationSets(params?: { search?: string; limit?: number; offset?: number }) {
+    const { body } = await this.client.get<V1alpha1ApplicationSetList>(
+      `/api/v1/applicationsets`,
+      params?.search ? { search: params.search } : undefined
+    );
+
+    // Strip heavy fields to reduce token usage
+    const strippedItems =
+      body.items?.map((appSet) => ({
+        metadata: {
+          name: appSet.metadata?.name,
+          namespace: appSet.metadata?.namespace,
+          labels: appSet.metadata?.labels,
+          creationTimestamp: appSet.metadata?.creationTimestamp
+        },
+        spec: appSet.spec,
+        status: {
+          conditions: appSet.status?.conditions,
+          applicationStatus: appSet.status?.applicationStatus
+        }
+      })) ?? [];
+
+    // Apply pagination
+    const start = params?.offset ?? 0;
+    const end = params?.limit ? start + params.limit : strippedItems.length;
+    const items = strippedItems.slice(start, end);
+
+    return {
+      items,
+      metadata: {
+        resourceVersion: body.metadata?.resourceVersion,
+        totalItems: strippedItems.length,
+        returnedItems: items.length,
+        hasMore: end < strippedItems.length
+      }
+    };
+  }
+
+  public async getApplicationSet(appSetName: string, appNamespace?: string) {
+    const queryParams = appNamespace ? { appNamespace } : undefined;
+    const { body } = await this.client.get<V1alpha1ApplicationSet>(
+      `/api/v1/applicationsets/${appSetName}`,
+      queryParams
+    );
+    return body;
+  }
+
+  public async createApplicationSet(appSet: V1alpha1ApplicationSet) {
+    const { body } = await this.client.post<V1alpha1ApplicationSet, V1alpha1ApplicationSet>(
+      `/api/v1/applicationsets`,
+      null,
+      appSet
+    );
+    return body;
+  }
+
+  public async updateApplicationSet(appSetName: string, appSet: V1alpha1ApplicationSet) {
+    const { body } = await this.client.put<V1alpha1ApplicationSet, V1alpha1ApplicationSet>(
+      `/api/v1/applicationsets/${appSetName}`,
+      null,
+      appSet
+    );
+    return body;
+  }
+
+  public async deleteApplicationSet(
+    appSetName: string,
+    options?: { appNamespace?: string; cascade?: boolean; propagationPolicy?: string }
+  ) {
+    const queryParams: Record<string, string | boolean> = {};
+    if (options?.appNamespace) queryParams.appNamespace = options.appNamespace;
+    if (options?.cascade !== undefined) queryParams.cascade = options.cascade;
+    if (options?.propagationPolicy) queryParams.propagationPolicy = options.propagationPolicy;
+
+    const { body } = await this.client.delete<V1alpha1ApplicationSet>(
+      `/api/v1/applicationsets/${appSetName}`,
+      Object.keys(queryParams).length > 0 ? queryParams : undefined
+    );
+    return body;
+  }
+
+  public async getApplicationSetResourceTree(appSetName: string, appNamespace?: string) {
+    const queryParams = appNamespace ? { appNamespace } : undefined;
+    const { body } = await this.client.get<V1alpha1ApplicationSetTree>(
+      `/api/v1/applicationsets/${appSetName}/resource-tree`,
+      queryParams
+    );
+    return body;
+  }
+
+  public async generateApplicationSet(
+    req: ApplicationsetApplicationSetGenerateRequest
+  ) {
+    const { body } = await this.client.post<ApplicationsetApplicationSetGenerateRequest, ApplicationsetApplicationSetGenerateResponse>(
+      `/api/v1/applicationsets/generate`,
+      null,
+      req
     );
     return body;
   }
