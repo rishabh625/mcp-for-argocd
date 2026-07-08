@@ -57,10 +57,15 @@ export const cmd = () => {
         .option('mcp-url', {
           type: 'string',
           describe: 'Public URL of this MCP server (e.g., https://mcp.example.com)'
+        })
+        .option('stateless', {
+          type: 'boolean',
+          default: false,
+          describe: 'Run in stateless mode (no session affinity; recommended for HPA)'
         });
     },
-    ({ port, serverUrl, insecure, callbackPort, mcpUrl }) =>
-      connectHttpTransport(port, { serverUrl, insecure, callbackPort, mcpUrl })
+    ({ port, serverUrl, insecure, callbackPort, mcpUrl, stateless }) =>
+      connectHttpTransport(port, { serverUrl, insecure, callbackPort, mcpUrl, stateless })
   );
 
   exe.command(

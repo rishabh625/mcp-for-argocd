@@ -1,5 +1,19 @@
-import type { ClusterSettings } from '../types/argocd-types.js';
 import type { OIDCConfig, OIDCProviderMetadata } from './types.js';
+
+// Subset of the ArgoCD `/api/v1/settings` response that this module consumes.
+// (The generated argocd-types.d.ts does not export a ClusterSettings type.)
+interface ClusterSettings {
+  dexConfig?: {
+    connectors?: Array<Record<string, unknown>>;
+  };
+  oidcConfig?: {
+    issuer?: string;
+    clientID?: string;
+    cliClientID?: string;
+    scopes?: string[];
+    enablePKCEAuthentication?: boolean;
+  };
+}
 
 export class SSONotConfiguredError extends Error {
   constructor(message: string) {

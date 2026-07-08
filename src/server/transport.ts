@@ -15,6 +15,12 @@ import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middlew
 import { ArgocdOAuthProvider } from '../auth/mcp-oauth-provider.js';
 import type { StoredAuth } from '../auth/types.js';
 import { getIAPUser, validateIAP } from '../auth/iap.js';
+import { tokenRegistryFromEnv } from './tokenRegistry.js';
+
+// Load the base-URL -> token registry once at startup from the JSON file at
+// ARGOCD_TOKEN_REGISTRY_PATH. Shared across all connections; read-only after
+// construction.
+const tokenRegistry = tokenRegistryFromEnv();
 
 interface AuthConfig {
   baseUrl: string;
@@ -174,7 +180,8 @@ export const connectStdioTransport = async () => {
     argocdBaseUrl: auth?.baseUrl ?? '',
     argocdApiToken: auth?.apiToken ?? '',
     tokenRefreshProvider,
-    isAuthenticated: auth !== null
+    isAuthenticated: auth !== null,
+    tokenRegistry
   });
 
   logger.info('Connecting to stdio transport');
@@ -188,7 +195,8 @@ export const connectSSETransport = (port: number) => {
   app.get('/sse', async (req, res) => {
     const server = createServer({
       argocdBaseUrl: (req.headers['x-argocd-base-url'] as string) || '',
-      argocdApiToken: (req.headers['x-argocd-api-token'] as string) || ''
+      argocdApiToken: (req.headers['x-argocd-api-token'] as string) || '',
+      tokenRegistry
     });
 
     const transport = new SSEServerTransport('/messages', res);
@@ -213,17 +221,75 @@ export const connectSSETransport = (port: number) => {
   app.listen(port);
 };
 
+// Resolve the session-level ArgoCD credentials from headers or env.
+//
+// The API token is only ever accepted here (x-argocd-api-token header or
+// ARGOCD_API_TOKEN env var) — never as a tool-call argument — so the secret
+// stays in the transport layer and out of prompts/model context.
+//
+// The token is normally MANDATORY and the connection is rejected when it is
+// missing. The exception is when a token registry (ARGOCD_TOKEN_REGISTRY_PATH)
+// is configured: the per-call base URL can then resolve its token from the
+// registry, so a tokenless connection is allowed.
+//
+// The base URL is optional at this level: when it is absent, callers may supply
+// it per call via the argocdBaseUrl tool argument.
+const resolveCredentials = (
+  req: express.Request,
+  res: express.Response
+): { argocdBaseUrl: string; argocdApiToken: string } | null => {
+  const argocdBaseUrl =
+    (req.headers['x-argocd-base-url'] as string) || process.env.ARGOCD_BASE_URL || '';
+  const argocdApiToken =
+    (req.headers['x-argocd-api-token'] as string) || process.env.ARGOCD_API_TOKEN || '';
+  if (!argocdApiToken && tokenRegistry.getSize() === 0) {
+    res
+      .status(400)
+      .send(
+        'x-argocd-api-token must be provided in the request header (or the ARGOCD_API_TOKEN env var), ' +
+          'or a token registry must be configured via ARGOCD_TOKEN_REGISTRY_PATH.'
+      );
+    return null;
+  }
+  return { argocdBaseUrl, argocdApiToken };
+};
+
 export const connectHttpTransport = (
   port: number,
-  options?: {
+  options: {
     serverUrl?: string;
     insecure?: boolean;
     callbackPort?: number;
     mcpUrl?: string;
-  }
+    stateless?: boolean;
+  } = {}
 ) => {
+  const stateless = options.stateless ?? false;
+  // Assigned in OAuth mode (serverUrl set) and exposed here so the shared
+  // handleSessionRequest (registered below for all modes) can reach it.
+  let oauthProvider: ArgocdOAuthProvider | undefined;
+
+  // Public path prefix under which this server is exposed behind an ingress
+  // (e.g. "/argocd"), derived from the advertised MCP URL. Used to rewrite the
+  // OAuth authorization-server metadata when the upstream router is unaware of
+  // the prefix. Empty when the server is exposed at the root (no rewriting).
+  let pathPrefix = '';
+  try {
+    const mcpUrlForPrefix = options.mcpUrl || process.env.MCP_URL || '';
+    if (mcpUrlForPrefix) {
+      const p = new URL(mcpUrlForPrefix).pathname.replace(/\/+$/, '');
+      if (p && p !== '/') pathPrefix = p;
+    }
+  } catch {
+    // Ignore a malformed MCP URL; fall back to no prefix rewriting.
+  }
+
   const app = express();
   app.use(express.json());
+
+  app.get('/healthz', (_, res) => {
+    res.status(200).json({ status: 'ok' });
+  });
 
   // Request logger for debugging
   app.use((req, res, next) => {
@@ -234,7 +300,7 @@ export const connectHttpTransport = (
       const oldJson = res.json;
       res.json = function (data) {
         if (data && typeof data === 'object') {
-          const prefix = '/argocd-mcp';
+          const prefix = pathPrefix;
           const keys = [
             'authorization_endpoint',
             'token_endpoint',
@@ -304,6 +370,7 @@ export const connectHttpTransport = (
       options.insecure,
       mcpBaseUrl
     );
+    oauthProvider = provider;
 
     // Install OAuth routes (/.well-known/oauth-authorization-server, /authorize, /token, /register)
     // Mount at root to ensure correct path matching for /.well-known endpoints
@@ -425,7 +492,8 @@ export const connectHttpTransport = (
           const server = createServer({
             argocdBaseUrl,
             argocdApiToken: argocdToken,
-            isAuthenticated: !!argocdToken
+            isAuthenticated: !!argocdToken,
+            tokenRegistry
           });
 
           await server.connect(transport);
@@ -453,49 +521,48 @@ export const connectHttpTransport = (
       'OAuth 2.1 authentication enabled for HTTP transport'
     );
   } else {
-    // Legacy mode: header-based auth
-    app.post('/mcp', async (req, res) => {
+    // Header/registry-based auth (no OAuth). Supports the ARGOCD_TOKEN_REGISTRY
+    // (multi-instance) and stateless mode for multi-replica (HPA) deployments.
+    const handleMcpPost = async (req: express.Request, res: express.Response) => {
       const sessionIdFromHeader = req.headers['mcp-session-id'] as string | undefined;
       let transport: StreamableHTTPServerTransport;
 
-      if (sessionIdFromHeader && httpTransports[sessionIdFromHeader]) {
+      if (!stateless && sessionIdFromHeader && httpTransports[sessionIdFromHeader]) {
         transport = httpTransports[sessionIdFromHeader];
-      } else if (!sessionIdFromHeader && isInitializeRequest(req.body)) {
-        const argocdBaseUrl =
-          (req.headers['x-argocd-base-url'] as string) || process.env.ARGOCD_BASE_URL || '';
-        const argocdApiToken =
-          (req.headers['x-argocd-api-token'] as string) || process.env.ARGOCD_API_TOKEN || '';
+      } else if (stateless || (!sessionIdFromHeader && isInitializeRequest(req.body))) {
+        const credentials = resolveCredentials(req, res);
+        if (!credentials) return;
 
-        if (argocdBaseUrl == '' || argocdApiToken == '') {
-          res
-            .status(400)
-            .send('x-argocd-base-url and x-argocd-api-token must be provided in headers.');
-          return;
+        transport = new StreamableHTTPServerTransport(
+          stateless
+            ? { sessionIdGenerator: undefined }
+            : {
+                sessionIdGenerator: () => randomUUID(),
+                onsessioninitialized: (newSessionId) => {
+                  httpTransports[newSessionId] = transport;
+                }
+              }
+        );
+
+        if (!stateless) {
+          transport.onclose = () => {
+            if (transport.sessionId) delete httpTransports[transport.sessionId];
+          };
         }
 
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (newSessionId) => {
-            httpTransports[newSessionId] = transport;
-          }
-        });
-
-        transport.onclose = () => {
-          if (transport.sessionId) {
-            delete httpTransports[transport.sessionId];
-          }
-        };
-
-        // Check if stored auth exists for token refresh capability
-        const storedAuth = await loadToken(argocdBaseUrl);
-        const tokenRefreshProvider = storedAuth
-          ? createTokenRefreshProvider(argocdBaseUrl)
-          : undefined;
+        // Enable SSO token refresh when a stored token exists for this base URL.
+        const storedAuth = credentials.argocdBaseUrl
+          ? await loadToken(credentials.argocdBaseUrl)
+          : null;
+        const tokenRefreshProvider =
+          storedAuth && credentials.argocdBaseUrl
+            ? createTokenRefreshProvider(credentials.argocdBaseUrl)
+            : undefined;
 
         const server = createServer({
-          argocdBaseUrl,
-          argocdApiToken,
-          tokenRefreshProvider
+          ...credentials,
+          tokenRefreshProvider,
+          tokenRegistry
         });
 
         await server.connect(transport);
@@ -515,10 +582,16 @@ export const connectHttpTransport = (
       }
 
       await transport.handleRequest(req, res, req.body);
-    });
+    };
+
+    app.post(['/', '/mcp'], handleMcpPost);
   }
 
   const handleSessionRequest = async (req: express.Request, res: express.Response) => {
+    if (stateless) {
+      res.status(405).send('Method Not Allowed in stateless mode');
+      return;
+    }
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !httpTransports[sessionId]) {
       // Handle browser visits to /mcp or /
@@ -529,7 +602,7 @@ export const connectHttpTransport = (
         req.accepts('html')
       ) {
         const iapUser = getIAPUser(req.headers);
-        const token = iapUser ? provider.getAccessTokenByEmail(iapUser.email) : undefined;
+        const token = iapUser ? oauthProvider?.getAccessTokenByEmail(iapUser.email) : undefined;
 
         if (token) {
           res.send(`
@@ -618,13 +691,14 @@ export const connectHttpTransport = (
       res.status(400).send('Invalid or missing session ID');
       return;
     }
-    const transport = httpTransports[sessionId];
-    await transport.handleRequest(req, res);
+    await httpTransports[sessionId].handleRequest(req, res);
   };
 
   app.get(['/', '/mcp'], handleSessionRequest);
   app.delete(['/', '/mcp'], handleSessionRequest);
 
-  logger.info(`Connecting to Http Stream transport on port: ${port}`);
+  logger.info(
+    `Connecting to Http Stream transport on port: ${port}${stateless ? ' (stateless mode)' : ''}`
+  );
   app.listen(port);
 };
