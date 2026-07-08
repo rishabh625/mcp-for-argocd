@@ -379,8 +379,8 @@ export class ArgoCDClient {
     };
   }
 
-  public async getApplicationSet(appSetName: string, appNamespace?: string) {
-    const queryParams = appNamespace ? { appNamespace } : undefined;
+  public async getApplicationSet(appSetName: string, appsetNamespace?: string) {
+    const queryParams = appsetNamespace ? { appsetNamespace } : undefined;
     const { body } = await this.client.get<V1alpha1ApplicationSet>(
       `/api/v1/applicationsets/${appSetName}`,
       queryParams
@@ -408,10 +408,10 @@ export class ArgoCDClient {
 
   public async deleteApplicationSet(
     appSetName: string,
-    options?: { appNamespace?: string; cascade?: boolean; propagationPolicy?: string }
+    options?: { appsetNamespace?: string; cascade?: boolean; propagationPolicy?: string }
   ) {
     const queryParams: Record<string, string | boolean> = {};
-    if (options?.appNamespace) queryParams.appNamespace = options.appNamespace;
+    if (options?.appsetNamespace) queryParams.appsetNamespace = options.appsetNamespace;
     if (options?.cascade !== undefined) queryParams.cascade = options.cascade;
     if (options?.propagationPolicy) queryParams.propagationPolicy = options.propagationPolicy;
 
@@ -422,8 +422,8 @@ export class ArgoCDClient {
     return body;
   }
 
-  public async getApplicationSetResourceTree(appSetName: string, appNamespace?: string) {
-    const queryParams = appNamespace ? { appNamespace } : undefined;
+  public async getApplicationSetResourceTree(appSetName: string, appsetNamespace?: string) {
+    const queryParams = appsetNamespace ? { appsetNamespace } : undefined;
     const { body } = await this.client.get<V1alpha1ApplicationSetTree>(
       `/api/v1/applicationsets/${appSetName}/resource-tree`,
       queryParams

@@ -501,7 +501,7 @@ export class Server extends McpServer {
         },
         async ({ applicationSetName, applicationSetNamespace, cascade, propagationPolicy }, client) => {
           const options: Record<string, string | boolean> = {};
-          if (applicationSetNamespace) options.appNamespace = applicationSetNamespace;
+          if (applicationSetNamespace) options.appsetNamespace = applicationSetNamespace;
           if (cascade !== undefined) options.cascade = cascade;
           if (propagationPolicy) options.propagationPolicy = propagationPolicy;
 
