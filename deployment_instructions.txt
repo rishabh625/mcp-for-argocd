@@ -1,0 +1,82 @@
+ArgoCD MCP Server - Direct IAP Cloud Run Deployment Guide
+=============================================================
+
+This guide describes how to deploy the ArgoCD MCP server to Google Cloud Run 
+using "Direct IAP" (Identity-Aware Proxy) which provides authentication 
+without requiring a Load Balancer.
+
+PREREQUISITES
+-------------
+1. Google Cloud SDK (gcloud) installed and authenticated.
+2. A Google Cloud project with Cloud Run and IAP APIs enabled.
+3. Access to an ArgoCD instance.
+
+DEPLOYMENT STEPS
+----------------
+
+1. SET ENVIRONMENT VARIABLES
+   Replace the values below with your specific setup:
+   
+   export PROJECT_ID=$(gcloud config get-value project)
+   export SERVICE_NAME="argocd-mcp"
+   export REGION="us-east4"
+   export ARGOCD_URL="https://your-argocd.example.com"
+
+2. BUILD AND PUSH IMAGE
+   Build the container image using Cloud Build:
+   
+   gcloud builds submit --tag gcr.io/${PROJECT_ID}/${SERVICE_NAME}
+
+3. INITIAL DEPLOYMENT (ENABLE IAP)
+   Deploy to Cloud Run with the --iap flag:
+   
+   gcloud beta run deploy ${SERVICE_NAME} \
+     --image us-east4-docker.pkg.dev/prj-dh-gen-ai-sandbox-01/mcp/argocd-mcp:oauth7 \
+     --region ${REGION} \
+     --iap \
+     --no-allow-unauthenticated \
+     --set-env-vars="ARGOCD_BASE_URL=${ARGOCD_URL}"
+
+4. GRANT IAP PERMISSION TO INVOKE CLOUD RUN
+   IAP needs the 'run.invoker' role to call your service:
+   
+   export PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format="value(projectNumber)")
+   
+   gcloud run services add-iam-policy-binding ${SERVICE_NAME} \
+       --region ${REGION} \
+       --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-iap.iam.gserviceaccount.com" \
+       --role="roles/run.invoker"
+
+5. GRANT USER ACCESS
+   Authorize yourself (or other testers) to pass through the IAP proxy:
+   
+   gcloud iap web add-iam-policy-binding \
+       --resource-type=cloud-run \
+       --service=${SERVICE_NAME} \
+       --region=${REGION} \
+       --member="rishabh.mishra.ext@deephealth.com" \
+       --role="roles/iap.httpsResourceAccessor"
+
+6. CONFIGURE PUBLIC MCP URL
+   Retrieve the service URL and update the MCP_URL environment variable:
+   
+   export RUN_URL=$(gcloud run services describe ${SERVICE_NAME} --region ${REGION} --format='value(status.url)')
+   
+   gcloud run services update ${SERVICE_NAME} \
+     --region ${REGION} \
+     --set-env-vars="MCP_URL=${RUN_URL}"
+
+HOW IT WORKS
+------------
+- Security Layer 1 (IAP): Google verifies your identity.
+- Security Layer 2 (OAuth Bridge): The server maps your IAP email to your ArgoCD token.
+- Flow: 
+  1. Access the MCP URL.
+  2. IAP prompts for Google Login.
+  3. First time only: App prompts for ArgoCD OAuth login.
+  4. Server remembers the link. Subsequent requests are fully automated.
+
+CLEANUP / TESTING
+-----------------
+To check the status of your IAP configuration:
+gcloud beta run services describe ${SERVICE_NAME} --region ${REGION}

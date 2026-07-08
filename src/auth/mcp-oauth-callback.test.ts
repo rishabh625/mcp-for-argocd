@@ -48,9 +48,12 @@ describe('startCallbackServer', () => {
     const port = 18901;
     shutdownFn = await startCallbackServer(provider, port);
 
-    const res = await fetch(`http://127.0.0.1:${port}/auth/callback?code=upstream-code&state=upstream-state`, {
-      redirect: 'manual'
-    });
+    const res = await fetch(
+      `http://127.0.0.1:${port}/auth/callback?code=upstream-code&state=upstream-state`,
+      {
+        redirect: 'manual'
+      }
+    );
 
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe(redirectUrl);

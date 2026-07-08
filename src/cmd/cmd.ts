@@ -38,7 +38,7 @@ export const cmd = () => {
       return yargs
         .option('port', {
           type: 'number',
-          default: 3000
+          default: 8080
         })
         .option('server-url', {
           type: 'string',
@@ -53,10 +53,14 @@ export const cmd = () => {
           type: 'number',
           default: 8085,
           describe: 'Port for the OAuth callback server (must match Dex redirect_uri registration)'
+        })
+        .option('mcp-url', {
+          type: 'string',
+          describe: 'Public URL of this MCP server (e.g., https://mcp.example.com)'
         });
     },
-    ({ port, serverUrl, insecure, callbackPort }) =>
-      connectHttpTransport(port, { serverUrl, insecure, callbackPort })
+    ({ port, serverUrl, insecure, callbackPort, mcpUrl }) =>
+      connectHttpTransport(port, { serverUrl, insecure, callbackPort, mcpUrl })
   );
 
   exe.command(

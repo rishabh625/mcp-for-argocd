@@ -1,0 +1,15 @@
+connectors:
+- config:
+    issuer: https://accounts.google.com
+    clientID: <GOOGLE_CLIENT_ID>
+    clientSecret: <GOOGLE_CLIENT_SECRET>
+  type: oidc
+  id: google
+  name: Google 
+staticClients:
+- id: argo-cd-cli
+  name: Argo CD CLI
+  public: true
+  redirectURIs:
+  - http://localhost:8085/auth/callback
+  - https://argocd-mcp-103611092023.us-east4.run.app/auth/callback

@@ -9,12 +9,12 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { getDefaultServer, loadToken, isTokenExpired, saveToken } from '../auth/token-store.js';
 import { createTokenRefreshProvider } from '../auth/token-refresh.js';
 import { fetchOIDCProviderMetadata } from '../auth/settings.js';
-import { refreshAccessToken } from '../auth/oauth.js';
+import { refreshAccessToken, generateState, generatePKCEChallenge } from '../auth/oauth.js';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { ArgocdOAuthProvider } from '../auth/mcp-oauth-provider.js';
-import { startCallbackServer } from '../auth/mcp-oauth-callback.js';
 import type { StoredAuth } from '../auth/types.js';
+import { getIAPUser, validateIAP } from '../auth/iap.js';
 
 interface AuthConfig {
   baseUrl: string;
@@ -82,10 +82,7 @@ async function tryRefreshExpiredToken(storedAuth: StoredAuth): Promise<string | 
       );
     }
   } else {
-    logger.debug(
-      { serverUrl: storedAuth.serverUrl },
-      'No refresh token available'
-    );
+    logger.debug({ serverUrl: storedAuth.serverUrl }, 'No refresh token available');
   }
 
   return null;
@@ -216,85 +213,240 @@ export const connectSSETransport = (port: number) => {
   app.listen(port);
 };
 
-export const connectHttpTransport = (port: number, options?: {
-  serverUrl?: string;
-  insecure?: boolean;
-  callbackPort?: number;
-}) => {
+export const connectHttpTransport = (
+  port: number,
+  options?: {
+    serverUrl?: string;
+    insecure?: boolean;
+    callbackPort?: number;
+    mcpUrl?: string;
+  }
+) => {
   const app = express();
   app.use(express.json());
+
+  // Request logger for debugging
+  app.use((req, res, next) => {
+    logger.info({ method: req.method, url: req.url, headers: req.headers }, 'Incoming request');
+
+    // Rewrite metadata response to include the path prefix
+    if (req.url.endsWith('/.well-known/oauth-authorization-server')) {
+      const oldJson = res.json;
+      res.json = function (data) {
+        if (data && typeof data === 'object') {
+          const prefix = '/argocd-mcp';
+          const keys = [
+            'authorization_endpoint',
+            'token_endpoint',
+            'registration_endpoint',
+            'introspection_endpoint',
+            'revocation_endpoint'
+          ];
+          for (const key of keys) {
+            if (data[key] && typeof data[key] === 'string' && !data[key].includes(prefix)) {
+              try {
+                const url = new URL(data[key]);
+                url.pathname = prefix + (url.pathname === '/' ? '' : url.pathname);
+                data[key] = url.toString();
+              } catch (e) {
+                logger.warn({ error: e, key, value: data[key] }, 'Failed to rewrite metadata URL');
+              }
+            }
+          }
+        }
+        return oldJson.apply(res, arguments as any);
+      };
+    }
+
+    const oldSend = res.send;
+    res.send = function (data) {
+      logger.info(
+        {
+          method: req.method,
+          url: req.url,
+          statusCode: res.statusCode,
+          headers: res.getHeaders(),
+          body: data?.toString().substring(0, 500)
+        },
+        'Sending response'
+      );
+      return oldSend.apply(res, arguments as any);
+    };
+    const oldJson = res.json;
+    res.json = function (data) {
+      logger.info(
+        {
+          method: req.method,
+          url: req.url,
+          statusCode: res.statusCode,
+          headers: res.getHeaders(),
+          body: JSON.stringify(data).substring(0, 500)
+        },
+        'Sending JSON response'
+      );
+      return oldJson.apply(res, arguments as any);
+    };
+    next();
+  });
 
   const httpTransports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
 
   if (options?.serverUrl) {
     // OAuth 2.1 mode: MCP clients authenticate via OAuth flow proxied to ArgoCD OIDC
     const callbackPort = options.callbackPort ?? 8085;
-    const mcpBaseUrl = `http://localhost:${port}`;
-    const provider = new ArgocdOAuthProvider(options.serverUrl, callbackPort, options.insecure);
+    let mcpBaseUrl = options.mcpUrl || process.env.MCP_URL || `http://localhost:${port}`;
+    if (!mcpBaseUrl.endsWith('/')) {
+      mcpBaseUrl += '/';
+    }
+    const provider = new ArgocdOAuthProvider(
+      options.serverUrl,
+      callbackPort,
+      options.insecure,
+      mcpBaseUrl
+    );
 
     // Install OAuth routes (/.well-known/oauth-authorization-server, /authorize, /token, /register)
-    app.use(mcpAuthRouter({
-      provider,
-      issuerUrl: new URL(mcpBaseUrl),
-      baseUrl: new URL(mcpBaseUrl),
-    }));
+    // Mount at root to ensure correct path matching for /.well-known endpoints
+    app.use(
+      mcpAuthRouter({
+        provider,
+        issuerUrl: new URL(mcpBaseUrl),
+        baseUrl: new URL(mcpBaseUrl)
+      })
+    );
 
-    // Start standalone callback server on the Dex-registered port
-    startCallbackServer(provider, callbackPort).catch((err) => {
-      logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Failed to start OAuth callback server');
-      process.exit(1);
-    });
+    // OAuth callback route merged into main app for single-port environments
+    app.get(['/auth/callback', '/mcp/auth/callback'], async (req, res) => {
+      const code = req.query.code as string;
+      const state = req.query.state as string;
+      const error = req.query.error as string;
+      const errorDescription = req.query.error_description as string;
 
-    // Protect /mcp with bearer auth
-    const bearerAuth = requireBearerAuth({ verifier: provider });
-
-    app.post('/mcp', bearerAuth, async (req, res) => {
-      const sessionIdFromHeader = req.headers['mcp-session-id'] as string | undefined;
-      let transport: StreamableHTTPServerTransport;
-
-      if (sessionIdFromHeader && httpTransports[sessionIdFromHeader]) {
-        transport = httpTransports[sessionIdFromHeader];
-      } else if (!sessionIdFromHeader && isInitializeRequest(req.body)) {
-        // Extract ArgoCD credentials from the verified OAuth token
-        const argocdToken = req.auth?.extra?.argocdToken as string;
-        const argocdBaseUrl = req.auth?.extra?.argocdBaseUrl as string;
-
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (newSessionId) => {
-            httpTransports[newSessionId] = transport;
-          }
-        });
-
-        transport.onclose = () => {
-          if (transport.sessionId) {
-            delete httpTransports[transport.sessionId];
-          }
-        };
-
-        const server = createServer({
-          argocdBaseUrl,
-          argocdApiToken: argocdToken,
-        });
-
-        await server.connect(transport);
-      } else {
-        const errorMsg = sessionIdFromHeader
-          ? `Invalid or expired session ID: ${sessionIdFromHeader}`
-          : 'Bad Request: Not an initialization request and no valid session ID provided.';
-        res.status(400).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32000,
-            message: errorMsg
-          },
-          id: req.body?.id !== undefined ? req.body.id : null
-        });
+      if (error) {
+        logger.error({ error, errorDescription }, 'Upstream OIDC authentication failed');
+        res.status(400).send(`Authentication failed: ${errorDescription || error}`);
         return;
       }
 
-      await transport.handleRequest(req, res, req.body);
+      if (!code || !state) {
+        res.status(400).send('Missing code or state parameter');
+        return;
+      }
+
+      try {
+        const iapUser = getIAPUser(req.headers);
+        const redirectUrl = await provider.handleUpstreamCallback(code, state, iapUser?.email);
+        res.redirect(redirectUrl);
+      } catch (err) {
+        logger.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          'Failed to handle upstream callback'
+        );
+        res.status(500).send('Authentication callback failed. Please try again.');
+      }
     });
+
+    // Protect /mcp with bearer auth
+    const iapToBearer = (
+      req: express.Request,
+      _res: express.Response,
+      next: express.NextFunction
+    ) => {
+      if (!req.headers.authorization) {
+        const iapUser = getIAPUser(req.headers);
+        if (iapUser) {
+          const token = provider.getAccessTokenByEmail(iapUser.email);
+          if (token) {
+            logger.debug({ email: iapUser.email }, 'Injected bearer token from IAP identity');
+            req.headers.authorization = `Bearer ${token}`;
+          }
+        }
+      }
+      next();
+    };
+
+    const bearerAuth = requireBearerAuth({ verifier: provider });
+
+    app.post(
+      ['/', '/mcp'],
+      iapToBearer,
+      (req, res, next) => {
+        // Priority 1: Bearer token in header (OAuth flow)
+        if (req.headers.authorization) {
+          return bearerAuth(req, res, next);
+        }
+
+        // Priority 2: Fallback to environment variable (Token-based auth)
+        if (process.env.ARGOCD_API_TOKEN && process.env.ARGOCD_BASE_URL) {
+          logger.debug('No authorization header, falling back to environment variables');
+          (req as any).auth = {
+            extra: {
+              argocdToken: process.env.ARGOCD_API_TOKEN,
+              argocdBaseUrl: process.env.ARGOCD_BASE_URL
+            }
+          };
+          return next();
+        }
+
+        // Priority 3: Allow unauthenticated initialization
+        // This allows the connection to be established so the client can see auth capabilities.
+        if (isInitializeRequest(req.body)) {
+          logger.debug('Allowing unauthenticated initialization handshake');
+          return next();
+        }
+
+        // No auth available, trigger OAuth flow for everything else
+        return bearerAuth(req, res, next);
+      },
+      async (req, res) => {
+        const sessionIdFromHeader = req.headers['mcp-session-id'] as string | undefined;
+        let transport: StreamableHTTPServerTransport;
+
+        if (sessionIdFromHeader && httpTransports[sessionIdFromHeader]) {
+          transport = httpTransports[sessionIdFromHeader];
+        } else if (!sessionIdFromHeader && isInitializeRequest(req.body)) {
+          // Extract ArgoCD credentials from the verified OAuth token
+          const argocdToken = req.auth?.extra?.argocdToken as string;
+          const argocdBaseUrl = (req.auth?.extra?.argocdBaseUrl as string) || options.serverUrl!;
+
+          transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (newSessionId) => {
+              httpTransports[newSessionId] = transport;
+            }
+          });
+
+          transport.onclose = () => {
+            if (transport.sessionId) {
+              delete httpTransports[transport.sessionId];
+            }
+          };
+
+          const server = createServer({
+            argocdBaseUrl,
+            argocdApiToken: argocdToken,
+            isAuthenticated: !!argocdToken
+          });
+
+          await server.connect(transport);
+        } else {
+          const errorMsg = sessionIdFromHeader
+            ? `Invalid or expired session ID: ${sessionIdFromHeader}`
+            : 'Bad Request: Not an initialization request and no valid session ID provided.';
+          res.status(400).json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: errorMsg
+            },
+            id: req.body?.id !== undefined ? req.body.id : null
+          });
+          return;
+        }
+
+        await transport.handleRequest(req, res, req.body);
+      }
+    );
 
     logger.info(
       { serverUrl: options.serverUrl, port },
@@ -369,6 +521,100 @@ export const connectHttpTransport = (port: number, options?: {
   const handleSessionRequest = async (req: express.Request, res: express.Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !httpTransports[sessionId]) {
+      // Handle browser visits to /mcp or /
+      if (
+        req.method === 'GET' &&
+        options.serverUrl &&
+        !req.headers['mcp-session-id'] &&
+        req.accepts('html')
+      ) {
+        const iapUser = getIAPUser(req.headers);
+        const token = iapUser ? provider.getAccessTokenByEmail(iapUser.email) : undefined;
+
+        if (token) {
+          res.send(`
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <title>ArgoCD MCP Server</title>
+                <style>
+                  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 2rem; background: #f4f7f9; }
+                  .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                  h1 { color: #00a0e9; margin-top: 0; }
+                  code { background: #eee; padding: 0.2rem 0.4rem; border-radius: 4px; font-family: monospace; word-break: break-all; }
+                  .success-icon { color: #28a745; font-size: 3rem; margin-bottom: 1rem; }
+                  .info { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #eee; font-size: 0.9rem; color: #666; }
+                </style>
+              </head>
+              <body>
+                <div class="card">
+                  <div class="success-icon">✅</div>
+                  <h1>Connected to ArgoCD</h1>
+                  <p>Authenticated as: <strong>${iapUser?.email}</strong></p>
+                  <p>Your ArgoCD account is successfully linked to this MCP server via IAP.</p>
+                  <p>You can now use this server in your MCP client (e.g. Cursor or VS Code).</p>
+                  
+                  <h3>MCP Configuration</h3>
+                  <p>Use the following endpoint URL in your client:</p>
+                  <code>${options.mcpUrl ? options.mcpUrl + '/mcp' : req.protocol + '://' + req.get('host') + '/mcp'}</code>
+                  
+                  <div class="info">
+                    <p>Connected to ArgoCD at: <a href="${options.serverUrl}" target="_blank">${options.serverUrl}</a></p>
+                  </div>
+                </div>
+              </body>
+            </html>
+          `);
+          return;
+        }
+
+        // If we land back with a code, it means we just completed the flow
+        if (req.query.code) {
+          res.send(`
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <title>ArgoCD MCP Server</title>
+                <style>
+                  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 2rem; background: #f4f7f9; }
+                  .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                  h1 { color: #00a0e9; margin-top: 0; }
+                  .success-icon { color: #28a745; font-size: 3rem; margin-bottom: 1rem; }
+                </style>
+              </head>
+              <body>
+                <div class="card">
+                  <div class="success-icon">✅</div>
+                  <h1>Authentication Successful</h1>
+                  <p>You have successfully authenticated with ArgoCD.</p>
+                  ${iapUser ? '<p>Redirecting to status page...</p><script>setTimeout(() => window.location.href = window.location.pathname, 2000);</script>' : '<p>You can now use this server in your MCP client.</p>'}
+                </div>
+              </body>
+            </html>
+          `);
+          return;
+        }
+
+        // Redirect to OAuth authorization endpoint using the 'web' client
+        const mcpBaseUrl = options.mcpUrl || `${req.protocol}://${req.get('host')}`;
+        const authorizeUrl = new URL(`${mcpBaseUrl}/authorize`);
+        authorizeUrl.searchParams.set('client_id', 'web');
+        authorizeUrl.searchParams.set('response_type', 'code');
+        authorizeUrl.searchParams.set('redirect_uri', `${mcpBaseUrl}/mcp`);
+        authorizeUrl.searchParams.set('state', generateState());
+
+        const pkce = generatePKCEChallenge();
+        authorizeUrl.searchParams.set('code_challenge', pkce.codeChallenge);
+        authorizeUrl.searchParams.set('code_challenge_method', pkce.codeChallengeMethod);
+
+        logger.info(
+          { email: iapUser?.email },
+          'Redirecting unauthenticated browser request to OAuth flow'
+        );
+        res.redirect(authorizeUrl.toString());
+        return;
+      }
+
       res.status(400).send('Invalid or missing session ID');
       return;
     }
@@ -376,8 +622,8 @@ export const connectHttpTransport = (port: number, options?: {
     await transport.handleRequest(req, res);
   };
 
-  app.get('/mcp', handleSessionRequest);
-  app.delete('/mcp', handleSessionRequest);
+  app.get(['/', '/mcp'], handleSessionRequest);
+  app.delete(['/', '/mcp'], handleSessionRequest);
 
   logger.info(`Connecting to Http Stream transport on port: ${port}`);
   app.listen(port);

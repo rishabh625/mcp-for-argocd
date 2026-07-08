@@ -1,11 +1,23 @@
 import { randomBytes } from 'node:crypto';
 import type { Response } from 'express';
-import type { OAuthServerProvider, AuthorizationParams } from '@modelcontextprotocol/sdk/server/auth/provider.js';
+import type {
+  OAuthServerProvider,
+  AuthorizationParams
+} from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type {
+  OAuthClientInformationFull,
+  OAuthTokens
+} from '@modelcontextprotocol/sdk/shared/auth.js';
 import { fetchOIDCSettings, fetchOIDCProviderMetadata } from './settings.js';
-import { generateState, generatePKCEChallenge, buildAuthorizationUrl, exchangeCodeForToken, refreshAccessToken } from './oauth.js';
+import {
+  generateState,
+  generatePKCEChallenge,
+  buildAuthorizationUrl,
+  exchangeCodeForToken,
+  refreshAccessToken
+} from './oauth.js';
 import type { OIDCConfig, OIDCProviderMetadata, PKCEChallenge, TokenInfo } from './types.js';
 import { logger } from '../logging/logging.js';
 
@@ -41,6 +53,8 @@ interface CompletedAuth {
   clientCodeChallenge: string;
   /** The MCP client ID */
   clientId: string;
+  /** User email (e.g. from IAP) */
+  userEmail?: string;
   /** Timestamp for cleanup */
   createdAt: number;
 }
@@ -51,6 +65,7 @@ interface StoredToken {
   oidcConfig: OIDCConfig;
   providerMetadata: OIDCProviderMetadata;
   clientId: string;
+  userEmail?: string;
   expiresAt?: number;
   createdAt: number;
 }
@@ -75,7 +90,17 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
   private pendingAuths = new Map<string, PendingAuth>();
   private completedAuths = new Map<string, CompletedAuth>();
   private accessTokens = new Map<string, StoredToken>();
-  private refreshTokens = new Map<string, { upstreamRefreshToken: string; oidcConfig: OIDCConfig; providerMetadata: OIDCProviderMetadata; clientId: string }>();
+  private refreshTokens = new Map<
+    string,
+    {
+      upstreamRefreshToken: string;
+      oidcConfig: OIDCConfig;
+      providerMetadata: OIDCProviderMetadata;
+      clientId: string;
+      userEmail?: string;
+    }
+  >();
+  private tokensByEmail = new Map<string, string>(); // userEmail -> opaqueAccessToken
 
   private cachedOidcConfig?: OIDCConfig;
   private cachedProviderMetadata?: OIDCProviderMetadata;
@@ -88,15 +113,28 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
   constructor(
     private argocdServerUrl: string,
     callbackPort: number = 8085,
-    private insecure: boolean = false
+    private insecure: boolean = false,
+    baseUrl?: string
   ) {
-    this.callbackUrl = `http://localhost:${callbackPort}/auth/callback`;
+    if (baseUrl) {
+      const normalizedBase = baseUrl.replace(/\/$/, '');
+      this.callbackUrl = `${normalizedBase}/auth/callback`;
+    } else {
+      this.callbackUrl = `http://localhost:${callbackPort}/auth/callback`;
+    }
     // Periodic cleanup of stale state (every 5 minutes)
     this.cleanupInterval = setInterval(() => this.cleanup(), 5 * 60 * 1000);
     // Don't keep process alive just for cleanup
     if (this.cleanupInterval.unref) {
       this.cleanupInterval.unref();
     }
+
+    // Register a static client for web-based login redirects
+    this.clients.set('web', {
+      client_id: 'web',
+      client_name: 'MCP Web Browser',
+      redirect_uris: [this.callbackUrl.replace(/\/auth\/callback$/, '/mcp')]
+    });
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
@@ -107,19 +145,25 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
         const client: OAuthClientInformationFull = {
           ...clientMetadata,
           client_id: clientId,
-          client_id_issued_at: Math.floor(Date.now() / 1000),
+          client_id_issued_at: Math.floor(Date.now() / 1000)
         };
         this.clients.set(clientId, client);
-        logger.info({ clientId, clientName: client.client_name }, 'Registered new MCP OAuth client');
+        logger.info(
+          { clientId, clientName: client.client_name },
+          'Registered new MCP OAuth client'
+        );
         return client;
-      },
+      }
     };
   }
 
   /**
    * Lazily fetch and cache the ArgoCD OIDC configuration
    */
-  private async getOidcConfig(): Promise<{ oidcConfig: OIDCConfig; providerMetadata: OIDCProviderMetadata }> {
+  private async getOidcConfig(): Promise<{
+    oidcConfig: OIDCConfig;
+    providerMetadata: OIDCProviderMetadata;
+  }> {
     if (this.cachedOidcConfig && this.cachedProviderMetadata) {
       return { oidcConfig: this.cachedOidcConfig, providerMetadata: this.cachedProviderMetadata };
     }
@@ -137,7 +181,11 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
   /**
    * Start authorization: redirect to ArgoCD's OIDC provider
    */
-  async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
+  async authorize(
+    client: OAuthClientInformationFull,
+    params: AuthorizationParams,
+    res: Response
+  ): Promise<void> {
     const { oidcConfig, providerMetadata } = await this.getOidcConfig();
 
     // Generate our own PKCE for the upstream OIDC flow
@@ -149,12 +197,16 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
     // Store pending auth keyed by upstream state
     this.pendingAuths.set(upstreamState, {
       upstreamState,
-      upstreamPkce: upstreamPkce ?? { codeVerifier: '', codeChallenge: '', codeChallengeMethod: 'S256' },
+      upstreamPkce: upstreamPkce ?? {
+        codeVerifier: '',
+        codeChallenge: '',
+        codeChallengeMethod: 'S256'
+      },
       clientRedirectUri: params.redirectUri,
       clientState: params.state,
       clientCodeChallenge: params.codeChallenge,
       clientId: client.client_id,
-      createdAt: Date.now(),
+      createdAt: Date.now()
     });
 
     // Build the upstream authorization URL
@@ -166,7 +218,10 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
       upstreamPkce
     );
 
-    logger.info({ clientId: client.client_id }, 'Redirecting to upstream OIDC provider for authentication');
+    logger.info(
+      { clientId: client.client_id },
+      'Redirecting to upstream OIDC provider for authentication'
+    );
     res.redirect(authUrl);
   }
 
@@ -176,7 +231,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
    *
    * Returns the MCP client's redirect URI with our auth code appended.
    */
-  async handleUpstreamCallback(code: string, state: string): Promise<string> {
+  async handleUpstreamCallback(code: string, state: string, userEmail?: string): Promise<string> {
     const pending = this.pendingAuths.get(state);
     if (!pending) {
       throw new Error('Unknown or expired authorization state');
@@ -195,6 +250,26 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
       pending.upstreamPkce.codeVerifier ? pending.upstreamPkce : undefined
     );
 
+    // For IAP/known users, automatically link the token to their email
+    if (userEmail) {
+      const opaqueAccessToken = generateOpaqueToken();
+      this.accessTokens.set(opaqueAccessToken, {
+        argocdAccessToken: argocdToken.accessToken,
+        argocdRefreshToken: argocdToken.refreshToken,
+        oidcConfig,
+        providerMetadata,
+        clientId: pending.clientId,
+        userEmail,
+        expiresAt: argocdToken.expiresAt,
+        createdAt: Date.now()
+      });
+      this.tokensByEmail.set(userEmail, opaqueAccessToken);
+      logger.info(
+        { userEmail, clientId: pending.clientId },
+        'Automatically linked ArgoCD token to user identity'
+      );
+    }
+
     // Generate our own auth code for the MCP client
     const ourAuthCode = generateOpaqueToken();
 
@@ -206,7 +281,8 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
       clientState: pending.clientState,
       clientCodeChallenge: pending.clientCodeChallenge,
       clientId: pending.clientId,
-      createdAt: Date.now(),
+      userEmail,
+      createdAt: Date.now()
     });
 
     // Build redirect back to MCP client
@@ -216,14 +292,20 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
       redirectUrl.searchParams.set('state', pending.clientState);
     }
 
-    logger.info({ clientId: pending.clientId }, 'Upstream authentication completed, redirecting to MCP client');
+    logger.info(
+      { clientId: pending.clientId },
+      'Upstream authentication completed, redirecting to MCP client'
+    );
     return redirectUrl.toString();
   }
 
   /**
    * Return the PKCE code_challenge for a given auth code
    */
-  async challengeForAuthorizationCode(_client: OAuthClientInformationFull, authorizationCode: string): Promise<string> {
+  async challengeForAuthorizationCode(
+    _client: OAuthClientInformationFull,
+    authorizationCode: string
+  ): Promise<string> {
     const completed = this.completedAuths.get(authorizationCode);
     if (!completed) {
       throw new Error('Unknown or expired authorization code');
@@ -234,7 +316,10 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
   /**
    * Exchange our auth code for an opaque access token
    */
-  async exchangeAuthorizationCode(client: OAuthClientInformationFull, authorizationCode: string): Promise<OAuthTokens> {
+  async exchangeAuthorizationCode(
+    client: OAuthClientInformationFull,
+    authorizationCode: string
+  ): Promise<OAuthTokens> {
     const completed = this.completedAuths.get(authorizationCode);
     if (!completed) {
       throw new Error('Unknown or expired authorization code');
@@ -243,7 +328,9 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
 
     // Generate opaque tokens that map to the real ArgoCD tokens
     const opaqueAccessToken = generateOpaqueToken();
-    const opaqueRefreshToken = completed.argocdToken.refreshToken ? generateOpaqueToken() : undefined;
+    const opaqueRefreshToken = completed.argocdToken.refreshToken
+      ? generateOpaqueToken()
+      : undefined;
 
     this.accessTokens.set(opaqueAccessToken, {
       argocdAccessToken: completed.argocdToken.accessToken,
@@ -251,9 +338,14 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
       oidcConfig: completed.oidcConfig,
       providerMetadata: completed.providerMetadata,
       clientId: client.client_id,
+      userEmail: completed.userEmail,
       expiresAt: completed.argocdToken.expiresAt,
-      createdAt: Date.now(),
+      createdAt: Date.now()
     });
+
+    if (completed.userEmail) {
+      this.tokensByEmail.set(completed.userEmail, opaqueAccessToken);
+    }
 
     if (opaqueRefreshToken && completed.argocdToken.refreshToken) {
       this.refreshTokens.set(opaqueRefreshToken, {
@@ -261,6 +353,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
         oidcConfig: completed.oidcConfig,
         providerMetadata: completed.providerMetadata,
         clientId: client.client_id,
+        userEmail: completed.userEmail
       });
     }
 
@@ -270,7 +363,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
       expires_in: completed.argocdToken.expiresAt
         ? Math.floor((completed.argocdToken.expiresAt - Date.now()) / 1000)
         : undefined,
-      refresh_token: opaqueRefreshToken,
+      refresh_token: opaqueRefreshToken
     };
 
     logger.info({ clientId: client.client_id }, 'Issued MCP access token');
@@ -280,7 +373,10 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
   /**
    * Refresh: exchange our opaque refresh token for a new opaque access token
    */
-  async exchangeRefreshToken(client: OAuthClientInformationFull, refreshToken: string): Promise<OAuthTokens> {
+  async exchangeRefreshToken(
+    client: OAuthClientInformationFull,
+    refreshToken: string
+  ): Promise<OAuthTokens> {
     const stored = this.refreshTokens.get(refreshToken);
     if (!stored) {
       throw new Error('Unknown or expired refresh token');
@@ -290,7 +386,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
     const newArgocdToken = await refreshAccessToken(
       stored.providerMetadata,
       stored.oidcConfig,
-      stored.upstreamRefreshToken,
+      stored.upstreamRefreshToken
     );
 
     // Generate new opaque tokens
@@ -303,9 +399,14 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
       oidcConfig: stored.oidcConfig,
       providerMetadata: stored.providerMetadata,
       clientId: client.client_id,
+      userEmail: stored.userEmail,
       expiresAt: newArgocdToken.expiresAt,
-      createdAt: Date.now(),
+      createdAt: Date.now()
     });
+
+    if (stored.userEmail) {
+      this.tokensByEmail.set(stored.userEmail, newAccessToken);
+    }
 
     // Remove old refresh token, add new one
     this.refreshTokens.delete(refreshToken);
@@ -315,6 +416,7 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
         oidcConfig: stored.oidcConfig,
         providerMetadata: stored.providerMetadata,
         clientId: client.client_id,
+        userEmail: stored.userEmail
       });
     }
 
@@ -324,11 +426,18 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
       expires_in: newArgocdToken.expiresAt
         ? Math.floor((newArgocdToken.expiresAt - Date.now()) / 1000)
         : undefined,
-      refresh_token: newRefreshToken,
+      refresh_token: newRefreshToken
     };
 
     logger.info({ clientId: client.client_id }, 'Refreshed MCP access token');
     return tokens;
+  }
+
+  /**
+   * Return the opaque access token associated with a user email
+   */
+  getAccessTokenByEmail(userEmail: string): string | undefined {
+    return this.tokensByEmail.get(userEmail);
   }
 
   /**
@@ -347,8 +456,8 @@ export class ArgocdOAuthProvider implements OAuthServerProvider {
       expiresAt: stored.expiresAt ? Math.floor(stored.expiresAt / 1000) : undefined,
       extra: {
         argocdToken: stored.argocdAccessToken,
-        argocdBaseUrl: this.argocdServerUrl,
-      },
+        argocdBaseUrl: this.argocdServerUrl
+      }
     };
   }
 

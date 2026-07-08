@@ -1,0 +1,8 @@
+connectors:
+- config:
+    issuer: https://accounts.google.com
+    clientID: <GOOGLE_CLIENT_ID>
+    clientSecret: <GOOGLE_CLIENT_SECRET>
+  type: oidc
+  id: google
+  name: Google 

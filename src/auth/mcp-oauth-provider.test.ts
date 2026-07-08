@@ -57,8 +57,16 @@ describe('ArgocdOAuthProvider', () => {
       const mockRes = { redirect: vi.fn() } as any;
 
       await provider.authorize(
-        { client_id: 'test', client_id_issued_at: 0, redirect_uris: ['http://localhost/callback'] } as any,
-        { redirectUri: 'http://localhost/callback', codeChallenge: 'challenge', state: 'client-state' } as any,
+        {
+          client_id: 'test',
+          client_id_issued_at: 0,
+          redirect_uris: ['http://localhost/callback']
+        } as any,
+        {
+          redirectUri: 'http://localhost/callback',
+          codeChallenge: 'challenge',
+          state: 'client-state'
+        } as any,
         mockRes
       );
 
@@ -76,8 +84,16 @@ describe('ArgocdOAuthProvider', () => {
       const mockRes = { redirect: vi.fn() } as any;
 
       await provider.authorize(
-        { client_id: 'test', client_id_issued_at: 0, redirect_uris: ['http://localhost/callback'] } as any,
-        { redirectUri: 'http://localhost/callback', codeChallenge: 'challenge', state: 'client-state' } as any,
+        {
+          client_id: 'test',
+          client_id_issued_at: 0,
+          redirect_uris: ['http://localhost/callback']
+        } as any,
+        {
+          redirectUri: 'http://localhost/callback',
+          codeChallenge: 'challenge',
+          state: 'client-state'
+        } as any,
         mockRes
       );
 
@@ -104,13 +120,24 @@ describe('ArgocdOAuthProvider', () => {
 
       // First, authorize to create a pending auth entry
       await provider.authorize(
-        { client_id: 'test-client', client_id_issued_at: 0, redirect_uris: ['http://localhost/callback'] } as any,
-        { redirectUri: 'http://localhost/callback', codeChallenge: 'challenge', state: 'client-state' } as any,
+        {
+          client_id: 'test-client',
+          client_id_issued_at: 0,
+          redirect_uris: ['http://localhost/callback']
+        } as any,
+        {
+          redirectUri: 'http://localhost/callback',
+          codeChallenge: 'challenge',
+          state: 'client-state'
+        } as any,
         mockRes
       );
 
       // Handle the callback with the upstream state
-      const redirectUrl = await provider.handleUpstreamCallback('upstream-code', 'mock-upstream-state');
+      const redirectUrl = await provider.handleUpstreamCallback(
+        'upstream-code',
+        'mock-upstream-state'
+      );
 
       expect(exchangeCodeForToken).toHaveBeenCalledWith(
         mockProviderMetadata,

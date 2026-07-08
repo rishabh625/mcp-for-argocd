@@ -1,0 +1,5 @@
+{
+  "data": {
+    "dex.config": "connectors:\n- config:\n    issuer: https://accounts.google.com\n    clientID: <GOOGLE_CLIENT_ID>\n    clientSecret: <GOOGLE_CLIENT_SECRET>\n  type: oidc\n  id: google\n  name: Google \nstaticClients:\n- id: argo-cd-cli\n  name: Argo CD CLI\n  public: true\n  redirectURIs:\n  - http://localhost:8085/auth/callback\n  - https://argocd-mcp-103611092023.us-east4.run.app/auth/callback\n"
+  }
+}

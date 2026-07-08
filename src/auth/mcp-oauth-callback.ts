@@ -14,49 +14,47 @@ export function startCallbackServer(
   port: number = 8085
 ): Promise<() => Promise<void>> {
   return new Promise((resolve, reject) => {
-    const server: Server = createServer(
-      (req: IncomingMessage, res: ServerResponse) => {
-        if (!req.url?.startsWith('/auth/callback')) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('Not Found');
-          return;
-        }
-
-        const url = new URL(req.url, `http://localhost:${port}`);
-        const code = url.searchParams.get('code');
-        const state = url.searchParams.get('state');
-        const error = url.searchParams.get('error');
-        const errorDescription = url.searchParams.get('error_description');
-
-        if (error) {
-          logger.error({ error, errorDescription }, 'Upstream OIDC authentication failed');
-          res.writeHead(400, { 'Content-Type': 'text/plain' });
-          res.end(`Authentication failed: ${errorDescription || error}`);
-          return;
-        }
-
-        if (!code || !state) {
-          res.writeHead(400, { 'Content-Type': 'text/plain' });
-          res.end('Missing code or state parameter');
-          return;
-        }
-
-        provider
-          .handleUpstreamCallback(code, state)
-          .then((redirectUrl) => {
-            res.writeHead(302, { Location: redirectUrl });
-            res.end();
-          })
-          .catch((err) => {
-            logger.error(
-              { error: err instanceof Error ? err.message : String(err) },
-              'Failed to handle upstream callback'
-            );
-            res.writeHead(500, { 'Content-Type': 'text/plain' });
-            res.end('Authentication callback failed. Please try again.');
-          });
+    const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      if (!req.url?.startsWith('/auth/callback')) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
+        return;
       }
-    );
+
+      const url = new URL(req.url, `http://localhost:${port}`);
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      const error = url.searchParams.get('error');
+      const errorDescription = url.searchParams.get('error_description');
+
+      if (error) {
+        logger.error({ error, errorDescription }, 'Upstream OIDC authentication failed');
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end(`Authentication failed: ${errorDescription || error}`);
+        return;
+      }
+
+      if (!code || !state) {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Missing code or state parameter');
+        return;
+      }
+
+      provider
+        .handleUpstreamCallback(code, state)
+        .then((redirectUrl) => {
+          res.writeHead(302, { Location: redirectUrl });
+          res.end();
+        })
+        .catch((err) => {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            'Failed to handle upstream callback'
+          );
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Authentication callback failed. Please try again.');
+        });
+    });
 
     const shutdown = (): Promise<void> => {
       return new Promise((resolveShutdown) => {
