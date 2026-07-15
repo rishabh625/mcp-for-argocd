@@ -4,10 +4,7 @@ data:
   admin.enabled: "true"
   application.instanceLabelKey: argocd.argoproj.io/instance
   application.sync.impersonation.enabled: "false"
-  dex.config: "connectors:\n- config:\n    issuer: https://accounts.google.com\n    clientID: <GOOGLE_CLIENT_ID>\n    clientSecret: <GOOGLE_CLIENT_SECRET>\n  type: oidc\n  id: google\n  name: Google
-    \nstaticClients:\n- id: argo-cd-cli\n  name: Argo CD CLI\n  public: true\n  redirectURIs:\n
-    \ - http://localhost:8085/auth/callback\n  - https://argocd-mcp-103611092023.us-east4.run.app/auth/callback\n
-    - https://34.111.68.168.nip.io/argocd-mcp/auth/callback\n  - https://techlive-sbx.deephealthos.com/argocd/auth/callback\n"
+  dex.config: "connectors:\n- config:\n    issuer: https://accounts.google.com\n    clientID: <GOOGLE_CLIENT_ID>\n    clientSecret: <GOOGLE_CLIENT_SECRET>\n  type: oidc\n  id: google\n  name: Google \nstaticClients:\n- id: argo-cd-cli\n  name: Argo CD CLI\n  public: true\n  redirectURIs:\n  - http://localhost:8085/auth/callback\n  - https://argocd-mcp-103611092023.us-east4.run.app/auth/callback\n  - https://34.111.68.168.nip.io/argocd-mcp/auth/callback\n  - https://argocd-sbx.techlive.dev.deephealthos.com/argocd-mcp/auth/callback\n"
   exec.enabled: "false"
   resource.customizations.ignoreResourceUpdates.ConfigMap: |
     jqPathExpressions:
@@ -106,7 +103,7 @@ data:
   timeout.hard.reconciliation: 0s
   timeout.reconciliation: 120s
   timeout.reconciliation.jitter: 60s
-  url: https://argocdgenai-dh-sb.awgp.xyz
+  url: https://argocd-sbx.techlive.dev.deephealthos.com/
 kind: ConfigMap
 metadata:
   annotations:

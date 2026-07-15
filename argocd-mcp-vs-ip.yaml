@@ -1,0 +1,29 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: argocd-mcp-virtualservice
+  namespace: argocd-mcp
+spec:
+  gateways:
+  - istio-system/ingress-global-gateway
+  hosts:
+  - techlive-sbx.deephealthos.com
+  http:
+  - match:
+    - uri:
+        prefix: /argocd-mcp
+    - uri:
+        prefix: /argocd
+    - uri:
+        prefix: /authorize
+    - uri:
+        prefix: /token
+    - uri:
+        prefix: /register
+    - uri:
+        prefix: /.well-known/oauth-authorization-server
+    route:
+    - destination:
+        host: 34.118.227.189
+        port:
+          number: 80

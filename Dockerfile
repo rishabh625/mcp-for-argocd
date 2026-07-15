@@ -4,8 +4,8 @@ ENV PATH="$PNPM_HOME:$PATH"
 # Run pnpm non-interactively: without a TTY, pnpm 10 otherwise aborts when it
 # needs to purge node_modules (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY).
 ENV CI=true
-ENV ARGOCD_BASE_URL="https://argocdgenai-dh-sb.awgp.xyz"
-ENV MCP_URL="https://argocd-mcp-103611092023.us-east4.run.app"
+ENV ARGOCD_BASE_URL="https://argocd-sbx.techlive.dev.deephealthos.com"
+ENV MCP_URL="https://techlive-sbx.deephealthos.com/argocd-mcp"
 RUN corepack enable
 COPY . /app
 WORKDIR /app

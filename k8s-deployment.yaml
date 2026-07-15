@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd-mcp
+  labels:
+    istio.io/rev: asm-managed
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-mcp
+  namespace: argocd-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: argocd-mcp
+  template:
+    metadata:
+      labels:
+        app: argocd-mcp
+    spec:
+      containers:
+      - name: argocd-mcp
+        image: us-east4-docker.pkg.dev/prj-dh-gen-ai-sandbox-01/mcp/argocd-mcp:latest
+        ports:
+        - containerPort: 8080
+        - containerPort: 8085
+        env:
+        - name: ARGOCD_BASE_URL
+          value: "https://argocd-sbx.techlive.dev.deephealthos.com"
+        - name: PORT
+          value: "8080"
+        command: ["node", "dist/index.js", "http", "--port", "8080", "--server-url", "https://argocd-sbx.techlive.dev.deephealthos.com", "--callback-url", "https://techlive-sbx.deephealthos.com/argocd-mcp/auth/callback"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-mcp
+  namespace: argocd-mcp
+spec:
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: oauth-callback
+    port: 8085
+    targetPort: 8085
+  selector:
+    app: argocd-mcp
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: argocd-mcp-virtualservice
+  namespace: argocd-mcp
+spec:
+  gateways:
+  - istio-system/ingress-global-gateway
+  hosts:
+  - techlive-sbx.deephealthos.com
+  http:
+  - match:
+    - uri:
+        exact: /.well-known/oauth-authorization-server
+    - uri:
+        prefix: /authorize
+    - uri:
+        prefix: /token
+    - uri:
+        prefix: /register
+    route:
+    - destination:
+        host: argocd-mcp
+        port:
+          number: 80
+  - match:
+    - uri:
+        regex: ^/argocd-mcp/auth(/|$)(.*)
+    rewrite:
+      uriRegexRewrite:
+        match: ^/argocd-mcp/auth(/|$)(.*)
+        rewrite: /auth/\2
+    route:
+    - destination:
+        host: argocd-mcp
+        port:
+          number: 8085
+  - match:
+    - uri:
+        regex: ^/argocd-mcp(/|$)(.*)
+    rewrite:
+      uriRegexRewrite:
+        match: ^/argocd-mcp(/|$)(.*)
+        rewrite: /\2
+    route:
+    - destination:
+        host: argocd-mcp
+        port:
+          number: 80
+  - match:
+    - uri:
+        regex: ^/argocd(/|$)(.*)
+    rewrite:
+      uriRegexRewrite:
+        match: ^/argocd(/|$)(.*)
+        rewrite: /\2
+    route:
+    - destination:
+        host: argocd-mcp
+        port:
+          number: 80

@@ -1,0 +1,133 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: app-generator-txw-dev
+  namespace: argocd-non-prod
+spec:
+  generators:
+    - matrix:
+        generators:
+          - list: 
+              elements: 
+              - cluster: dev
+                url: https://34.95.40.112
+                project: txw-dev-non-prod
+                env_file: dev
+          - git:
+              repoURL: https://gitlab.com/deephealth/OS/platform/devops/argocd.git
+              revision: master
+              directories:
+              - path: apps/txw-apps/*
+              - path: apps/txw-apps/admin-portal/*
+              - path: apps/txw-apps/510k/*
+                exclude: true
+              - path: apps/txw-apps/admin-frontend
+                exclude: true
+              - path: apps/txw-apps/home-frontend
+                exclude: true
+              - path: apps/txw-apps/host-frontend
+                exclude: true
+              - path: apps/txw-apps/sso-login
+                exclude: true
+              - path: apps/txw-apps/store-techlive
+                exclude: true
+              - path: apps/txw-apps/techliveadminportal
+                exclude: true
+              - path: apps/txw-apps/transmission-service
+                exclude: true
+              - path: apps/txw-apps/rgbsignaling-frontend
+                exclude: true
+              - path: apps/txw-apps/rgbsignaling
+                exclude: true
+              - path: apps/txw-apps/deephealthremotenew
+                exclude: true
+              - path: apps/txw-apps/deephealthservernew
+                exclude: true
+              - path: apps/txw-apps/meeting-frontend-chime
+                exclude: true
+              - path: apps/txw-apps/console-frontend-chime
+                exclude: true
+              - path: apps/txw-apps/isa-mdm-workflow-service
+                exclude: true
+              - path: apps/txw-apps/database-migration-module
+                exclude: true
+              - path: apps/txw-apps/hasura-graph
+                exclude: true
+              - path: apps/txw-apps/isa-frontend-chime
+                exclude: true
+              - path: apps/txw-apps/meeting-frontend-chime
+                exclude: true
+              - path: apps/txw-apps/console-frontend-chime
+                exclude: true
+              - path: apps/txw-apps/aws-chime-apps/*
+                exclude: true
+              - path: apps/txw-apps/ssl-database-testing
+                exclude: true
+              - path: apps/txw-apps/sso-login
+                exclude: true
+              - path: apps/txw-apps/store-techlive
+                exclude: true
+              # Legacy scheduler stack — replaced by scheduler-portal ApplicationSet
+              - path: apps/txw-apps/scheduler-auth
+                exclude: true
+              - path: apps/txw-apps/scheduler-gateway
+                exclude: true
+              - path: apps/txw-apps/scheduler-operations
+                exclude: true
+              - path: apps/txw-apps/scheduler-workforce
+                exclude: true
+              - path: apps/txw-apps/scheduler-platform-svc
+                exclude: true
+              - path: apps/txw-apps/scheduler-routes
+                exclude: true
+              - path: apps/txw-apps/scheduler-service
+                exclude: true
+              - path: apps/txw-apps/scheduler-frontend
+                exclude: true
+              - path: apps/txw-apps/scheduler-portal
+                exclude: true
+              - path: apps/txw-apps/admin-portal/admin-portal-audit-service
+                exclude: true
+              - path: apps/txw-apps/admin-portal/admin-portal-contract-service
+                exclude: true
+              - path: apps/txw-apps/admin-portal/admin-portal-gateway
+                exclude: true
+              - path: apps/txw-apps/admin-portal/admin-portal-infra-provision-mfe
+                exclude: true
+              - path: apps/txw-apps/admin-portal/admin-portal-release-mfe
+                exclude: true
+              - path: apps/txw-apps/admin-portal/admin-portal-tenant-mfe
+                exclude: true 
+              - path: apps/txw-apps/admin-portal/admin-portal-tenant-service
+                exclude: true
+                                         
+  template:
+    metadata:
+      name: "{{path.basename}}-{{env_file}}"
+      annotations:
+        notifications.argoproj.io/subscribe.on-sync-status.slack: "txw-devops-alerts"
+    spec:
+      project: txw-dev-non-prod
+      ignoreDifferences:
+        - group: networking.istio.io
+          kind: EnvoyFilter
+          jsonPointers:
+            - /spec
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+      source:
+        repoURL: https://gitlab.com/deephealth/OS/platform/devops/argocd.git
+        targetRevision: master
+        path: "{{path}}"
+        helm:
+          valueFiles:
+            - "values-{{env_file}}.yml"
+      destination:
+        # external IP of the preprod cluster
+       server: '{{url}}'
+       namespace: '{{path.basename}}'
+

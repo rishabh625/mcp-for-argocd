@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  dex.config: |
+    connectors:
+    - config:
+        issuer: https://accounts.google.com
+        clientID: <GOOGLE_CLIENT_ID>
+        clientSecret: <GOOGLE_CLIENT_SECRET>
+      type: oidc
+      id: google
+      name: Google 
+    staticClients:
+    - id: argo-cd-cli
+      name: Argo CD CLI
+      public: true
+      redirectURIs:
+      - http://localhost:8085/auth/callback
+      - https://argocd-mcp-103611092023.us-east4.run.app/auth/callback
+      - https://34.111.68.168.nip.io/argocd-mcp/auth/callback
+      - https://techlive-sbx.deephealthos.com/argocd/auth/callback
+      - https://techlive-sbx.deephealthos.com/argocd-mcp/auth/callback
+      - https://argocd-sbx.techlive.dev.deephealthos.com/auth/callback
+      - https://argocd-sbx.techlive.dev.deephealthos.com/api/dex/callback
+      - https://argocd-sbx.techlive.dev.deephealthos.com/argocd-mcp/auth/callback
+      - http://localhost:8787/callback
